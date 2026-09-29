@@ -82,6 +82,10 @@ nav.tabs button[aria-selected="true"]{color:var(--fg);box-shadow:inset 0 3px 0 v
 .chip select{border:0;background:transparent;padding:0}
 .chip input[type=search]{border:0;background:transparent;width:130px;outline:none}
 .chip.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+.globe{position:absolute;inset:0;z-index:700;background:var(--bg);display:flex;flex-direction:column}
+.globe iframe{flex:1;width:100%;border:0;min-height:0}
+.globebar{display:flex;gap:8px;flex-wrap:wrap;padding:8px 12px;background:var(--surface);border-top:1px solid var(--line)}
+.globebar .chip{box-shadow:none}
 .note{position:absolute;z-index:550;left:12px;right:12px;top:108px;max-width:520px;background:var(--surface);border:1px solid var(--warn);border-radius:10px;padding:10px 12px;box-shadow:var(--shadow);display:grid;gap:4px;font-size:14px}
 .note b{color:var(--warn)}
 .diag{display:grid;gap:0;border:1px solid var(--line);border-radius:8px;overflow:hidden}
@@ -228,10 +232,22 @@ h3.h{font:700 18px var(--f-display);text-transform:uppercase;letter-spacing:.06e
         <label class="chip">🔍<input type="search" id="q" placeholder="Reg, callsign, type" aria-label="Zoeken"></label>
         <button class="chip" id="pickBtn">Kies op kaart</button>
         <button class="chip" id="styleBtn" aria-label="Kaartstijl wisselen"></button>
+        <button class="chip primary" id="globeBtn">🌍 Live globe</button>
+      </div>
+      <div class="globe" id="globe" hidden>
+        <iframe id="globeFrame" title="Live vliegtuigkaart" loading="lazy" allow="geolocation"></iframe>
+        <div class="globebar">
+          <button class="chip primary" id="globeBack">← Spotbase-radar</button>
+          <label class="chip">Bron
+            <select id="globeSrc"><option value="aplive">airplanes.live</option><option value="adsblol">adsb.lol</option><option value="adsbfi">adsb.fi</option></select>
+          </label>
+          <button class="chip" id="globeSpot">＋ Spot toevoegen</button>
+        </div>
       </div>
       <div class="note" id="fileNote" hidden>
         <b>Radar krijgt geen verbinding.</b>
-        <span id="fileNoteTxt">De live-servers geven nu geen antwoord. De app probeert het automatisch opnieuw. Via Instellingen → Test alle bronnen zie je welke bron werkt.</span>
+        <span id="fileNoteTxt">De live-servers geven nu geen antwoord. De app probeert het automatisch opnieuw.</span>
+        <div><button class="btn primary sm" id="noteGlobe" type="button">🌍 Open de live globe</button></div>
       </div>
       <div class="drawer" id="drawer">
         <h3><span>In de buurt <span class="mono" id="count">0</span></span><button class="iconbtn" id="drawerBtn" aria-label="Lijst in- of uitklappen">▾</button></h3>
@@ -573,6 +589,7 @@ function setMe(ll, fly){
   settings.loc = me; saveSettings();
   drawMe();
   if (fly) map.flyTo(me, settings.radius > 150 ? 8 : settings.radius > 60 ? 9 : 10, {duration:.8});
+  if (settings.globeMode) showGlobe(true);
   poll(true);
 }
 let watchId = null;
@@ -1149,6 +1166,33 @@ $("#s-proxy").value = settings.proxy || "";
 $("#s-proxy").onchange = e => { settings.proxy = e.target.value.trim(); saveSettings(); lastRoute = null; LS.set("route", null); poll(true); };
 $("#s-src").onchange = e => { settings.src = e.target.value; saveSettings(); poll(true); };
 
+/* ---------- live globe (volledige tracker-site in een venster; werkt ook als de databronnen blokkeren) ---------- */
+const GLOBES = {
+  aplive:  "https://globe.airplanes.live/",
+  adsblol: "https://globe.adsb.lol/",
+  adsbfi:  "https://globe.adsb.fi/"
+};
+let globeKey = "";
+function globeUrl(){
+  const c = me || DEFAULT, z = settings.radius > 150 ? 8 : settings.radius > 60 ? 9 : 10;
+  const base = GLOBES[settings.globeSrc] || GLOBES.aplive;
+  return `${base}?SiteLat=${c[0].toFixed(4)}&SiteLon=${c[1].toFixed(4)}&lat=${c[0].toFixed(4)}&lon=${c[1].toFixed(4)}&zoom=${z}`;
+}
+function showGlobe(on){
+  settings.globeMode = !!on; saveSettings();
+  $("#globe").hidden = !on;
+  if (on){
+    const u = globeUrl();
+    if (u !== globeKey){ $("#globeFrame").src = u; globeKey = u; }
+  } else setTimeout(() => map.invalidateSize(), 50);
+}
+$("#globeSrc").value = settings.globeSrc || "aplive";
+$("#globeSrc").onchange = e => { settings.globeSrc = e.target.value; saveSettings(); globeKey = ""; showGlobe(true); };
+$("#globeBtn").onclick = () => showGlobe(true);
+$("#noteGlobe").onclick = () => showGlobe(true);
+$("#globeBack").onclick = () => showGlobe(false);
+$("#globeSpot").onclick = () => { fillForm({date: nowLocal()}); switchView("log"); $("#f-reg").focus(); toast("Typ de registratie van het toestel en druk op Opzoeken"); };
+
 /* ---------- navigation ---------- */
 function switchView(v){
   $$("nav.tabs button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.v === v)));
@@ -1165,6 +1209,7 @@ $$("nav.tabs button").forEach(b => b.onclick = () => switchView(b.dataset.v));
   await refreshAll();
   const h = location.hash.slice(1); if (["log","coll","set"].includes(h)) switchView(h);
   if (me) drawMe();
+  if (settings.globeMode) showGlobe(true);
   poll(true);
   if (!window.isSecureContext || !/^https?:$/.test(location.protocol)){
     $("#fileNoteTxt").textContent = "Je hebt de app als los bestand geopend. Telefoonbrowsers blokkeren dan GPS en vaak ook live data. Zet het bestand online (bijv. GitHub Pages of Netlify) en open het via https.";
