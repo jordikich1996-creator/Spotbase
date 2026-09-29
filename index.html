@@ -332,6 +332,7 @@ h3.h{font:700 18px var(--f-display);text-transform:uppercase;letter-spacing:.06e
         <div class="panel">
           <h3 class="h">Verbinding testen</h3>
           <p class="hint" style="margin:0">Controleert elke databron vanaf dit apparaat. Handig als de radar leeg blijft.</p>
+          <div class="field"><label for="s-proxy">Eigen proxy-adres (optioneel)</label><input id="s-proxy" placeholder="https://jouw-proxy.workers.dev/?url=" inputmode="url" autocapitalize="off" spellcheck="false"><span class="hint">Het adres van de bron wordt achter dit adres geplakt, of op de plek van {url}.</span></div>
           <div><button class="btn primary sm" id="diagBtn" type="button">Test alle bronnen</button></div>
           <div id="diag" class="diag"></div>
         </div>
@@ -604,20 +605,41 @@ function sourceUrl(s, c){
   const nm = Math.min(250, Math.ceil(settings.radius/1.852));
   return s === "opensky" ? openskyBox(c) : SOURCES[s](c[0].toFixed(4), c[1].toFixed(4), nm);
 }
-async function fetchSource(s, c){
-  const j = await getJSON(sourceUrl(s, c), 10000);
+const PUBLIC_PROXIES = [
+  {name:"codetabs", wrap: u => "https://api.codetabs.com/v1/proxy/?quest=" + encodeURIComponent(u)},
+  {name:"allorigins", wrap: u => "https://api.allorigins.win/raw?url=" + encodeURIComponent(u)},
+  {name:"corsproxy.io", wrap: u => "https://corsproxy.io/?url=" + encodeURIComponent(u)}
+];
+function proxies(){
+  const own = (settings.proxy || "").trim();
+  const list = [{name:"direct", wrap: u => u}];
+  if (own) list.push({name:"eigen proxy", wrap: u => own.includes("{url}") ? own.replace("{url}", encodeURIComponent(u)) : own + encodeURIComponent(u)});
+  return list.concat(PUBLIC_PROXIES);
+}
+async function fetchSource(s, c, px){
+  const j = await getJSON((px || proxies()[0]).wrap(sourceUrl(s, c)), 10000);
   return s === "opensky" ? fromOpenSky(j) : (j.ac || j.aircraft || []);
 }
+let lastRoute = LS.get("route", null); // {src, px}
 async function fetchTraffic(){
   const c = me || DEFAULT;
-  let order = ["adsbfi","adsblol","adsbfi3","opensky","adsblol2"];
-  if (settings.src !== "auto" && order.includes(settings.src)) order = [settings.src, ...order.filter(x => x !== settings.src)];
-  else if (lastSrc) order = [lastSrc, ...order.filter(x => x !== lastSrc)];
+  let srcs = ["adsbfi","adsblol","opensky","adsbfi3","adsblol2"];
+  if (settings.src !== "auto" && srcs.includes(settings.src)) srcs = [settings.src, ...srcs.filter(x => x !== settings.src)];
+  const pxs = proxies();
+  let routes = [];
+  for (const p of pxs) for (const s of srcs) routes.push({src:s, px:p.name});
+  if (lastRoute) routes = [lastRoute, ...routes.filter(r => !(r.src === lastRoute.src && r.px === lastRoute.px))];
   let lastErr;
-  for (const s of order){
-    try{ const list = await fetchSource(s, c); lastSrc = s; return {list, src: s}; }
-    catch(e){ lastErr = e; }
+  for (const r of routes){
+    const p = pxs.find(x => x.name === r.px); if (!p) continue;
+    try{
+      const list = await fetchSource(r.src, c, p);
+      if (!Array.isArray(list)) throw new Error("bad");
+      lastRoute = r; lastSrc = r.src; LS.set("route", r);
+      return {list, src: r.src, px: r.px};
+    }catch(e){ lastErr = e; }
   }
+  lastRoute = null;
   throw lastErr;
 }
 function errText(e){
@@ -633,7 +655,14 @@ async function testSources(){
     + `<div class="drow" id="d-db"><span>adsbdb (registraties)</span><span class="mono">testen…</span></div><div class="drow" id="d-ps"><span>Planespotters (foto's)</span><span class="mono">testen…</span></div>`;
   const set = (id, ok, txt) => { const el = $("#" + id + " .mono"); el.textContent = (ok ? "✓ " : "✗ ") + txt; el.style.color = ok ? "var(--ok)" : "var(--warn)"; };
   await Promise.all([
-    ...rows.map(async ([k]) => { try{ const l = await fetchSource(k, c); set("d-" + k, true, l.length + " toestellen"); }catch(e){ set("d-" + k, false, errText(e)); } }),
+    ...rows.map(async ([k]) => {
+      let err;
+      for (const p of proxies()){
+        try{ const l = await fetchSource(k, c, p); if (!Array.isArray(l)) throw new Error("bad"); return set("d-" + k, true, l.length + " toestellen" + (p.name !== "direct" ? " via " + p.name : "")); }
+        catch(e){ err = e; }
+      }
+      set("d-" + k, false, errText(err) + " (ook via proxy's)");
+    }),
     (async () => { try{ const j = await getJSON("https://api.adsbdb.com/v0/aircraft/PH-BXA"); set("d-db", !!j?.response?.aircraft, j?.response?.aircraft ? "werkt" : "leeg antwoord"); }catch(e){ set("d-db", false, errText(e)); } })(),
     (async () => { try{ const j = await getJSON("https://api.planespotters.net/pub/photos/reg/PH-BXA"); set("d-ps", true, (j.photos?.length || 0) + " foto's"); }catch(e){ set("d-ps", false, errText(e)); } })()
   ]);
@@ -644,7 +673,7 @@ async function poll(force){
   if (busy){ pollTimer = setTimeout(poll, 1000); return; }
   busy = true;
   try{
-    const {list, src} = await fetchTraffic();
+    const {list, src, px} = await fetchTraffic();
     const c = me || DEFAULT;
     aircraft = list.filter(a => a.lat != null && a.lon != null).map(a => {
       a.hex = (a.hex||"").replace("~","").toUpperCase();
@@ -657,7 +686,7 @@ async function poll(force){
       return a;
     }).filter(a => a.dist <= settings.radius).sort((x, y) => x.dist - y.dist);
     lastOk = Date.now();
-    setLive("on", aircraft.length + " live · " + SRC_NAME[src]); fails = 0; $("#fileNote").hidden = true;
+    setLive("on", aircraft.length + " live · " + SRC_NAME[src] + (px !== "direct" ? " (proxy)" : "")); fails = 0; $("#fileNote").hidden = true;
     render();
     checkAlerts();
   }catch(e){
@@ -1052,6 +1081,8 @@ $("#s-int").onchange = e => { settings.interval = +e.target.value; saveSettings(
 $("#s-units").onchange = e => { settings.units = e.target.value; saveSettings(); render(); };
 $("#s-labels").onchange = e => { settings.labels = e.target.value; saveSettings(); render(); };
 $("#diagBtn").onclick = testSources;
+$("#s-proxy").value = settings.proxy || "";
+$("#s-proxy").onchange = e => { settings.proxy = e.target.value.trim(); saveSettings(); lastRoute = null; LS.set("route", null); poll(true); };
 $("#s-src").onchange = e => { settings.src = e.target.value; saveSettings(); poll(true); };
 
 /* ---------- navigation ---------- */
