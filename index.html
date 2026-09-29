@@ -82,6 +82,10 @@ nav.tabs button[aria-selected="true"]{color:var(--fg);box-shadow:inset 0 3px 0 v
 .chip.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
 .note{position:absolute;z-index:550;left:12px;right:12px;top:108px;max-width:520px;background:var(--surface);border:1px solid var(--warn);border-radius:10px;padding:10px 12px;box-shadow:var(--shadow);display:grid;gap:4px;font-size:14px}
 .note b{color:var(--warn)}
+.diag{display:grid;gap:0;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.diag:empty{display:none}
+.drow{display:flex;justify-content:space-between;gap:12px;padding:8px 12px;border-bottom:1px solid var(--line);font-size:14px;flex-wrap:wrap}
+.drow:last-child{border-bottom:0}
 .legend{position:absolute;left:12px;bottom:12px;z-index:500;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:6px 10px;display:flex;gap:10px;font:11px var(--f-mono);box-shadow:var(--shadow);flex-wrap:wrap;max-width:calc(100% - 24px)}
 .legend span{display:inline-flex;align-items:center;gap:4px}
 .legend i{width:10px;height:10px;border-radius:2px;display:inline-block}
@@ -224,7 +228,7 @@ h3.h{font:700 18px var(--f-display);text-transform:uppercase;letter-spacing:.06e
       </div>
       <div class="note" id="fileNote" hidden>
         <b>Radar krijgt geen verbinding.</b>
-        <span id="fileNoteTxt">De live-servers geven nu geen antwoord. De app probeert het automatisch opnieuw.</span>
+        <span id="fileNoteTxt">De live-servers geven nu geen antwoord. De app probeert het automatisch opnieuw. Via Instellingen → Test alle bronnen zie je welke bron werkt.</span>
       </div>
       <div class="drawer" id="drawer">
         <h3><span>In de buurt <span class="mono" id="count">0</span></span><button class="iconbtn" id="drawerBtn" aria-label="Lijst in- of uitklappen">▾</button></h3>
@@ -305,7 +309,7 @@ h3.h{font:700 18px var(--f-display);text-transform:uppercase;letter-spacing:.06e
             <div class="field"><label for="s-int">Verversen elke</label><select id="s-int"><option value="3">3 seconden</option><option value="5">5 seconden</option><option value="10">10 seconden</option><option value="20">20 seconden</option></select></div>
             <div class="field"><label for="s-units">Eenheden</label><select id="s-units"><option value="aero">Luchtvaart (ft, kt)</option><option value="metric">Metrisch (m, km/u)</option></select></div>
             <div class="field"><label for="s-labels">Labels op kaart</label><select id="s-labels"><option value="cs">Callsign</option><option value="reg">Registratie</option><option value="type">Type</option><option value="none">Geen</option></select></div>
-            <div class="field"><label for="s-src">Databron radar</label><select id="s-src"><option value="auto">Automatisch</option><option value="adsblol">adsb.lol</option><option value="adsbfi">adsb.fi</option></select></div>
+            <div class="field"><label for="s-src">Databron radar</label><select id="s-src"><option value="auto">Automatisch</option><option value="adsbfi">adsb.fi</option><option value="adsblol">adsb.lol</option><option value="opensky">OpenSky Network</option></select></div>
           </div>
         </div>
         <div class="panel">
@@ -326,8 +330,14 @@ h3.h{font:700 18px var(--f-display);text-transform:uppercase;letter-spacing:.06e
           <div id="wipeSlot"><button class="btn danger sm" id="wipeBtn" type="button">Logboek wissen</button></div>
         </div>
         <div class="panel">
+          <h3 class="h">Verbinding testen</h3>
+          <p class="hint" style="margin:0">Controleert elke databron vanaf dit apparaat. Handig als de radar leeg blijft.</p>
+          <div><button class="btn primary sm" id="diagBtn" type="button">Test alle bronnen</button></div>
+          <div id="diag" class="diag"></div>
+        </div>
+        <div class="panel">
           <h3 class="h">Bronnen</h3>
-          <p class="hint" style="margin:0">Live posities: adsb.lol en adsb.fi (open ADS-B-netwerken). Registratie, type, eigenaar en routes: adsbdb.com. Foto's van toestellen: Planespotters.net. Kaart: Esri en OpenStreetMap. Geen account of API-sleutel nodig.</p>
+          <p class="hint" style="margin:0">Live posities: adsb.fi, adsb.lol en OpenSky Network (open ADS-B-netwerken). OpenSky ververst anoniem hooguit elke 20 seconden en heeft een daglimiet. Registratie, type, eigenaar en routes: adsbdb.com. Foto's van toestellen: Planespotters.net. Kaart: Esri en OpenStreetMap. Geen account of API-sleutel nodig.</p>
         </div>
       </div>
     </section>
@@ -572,23 +582,61 @@ const alerted = new Set();
 const SOURCES = {
   adsblol: (lat, lon, nm) => `https://api.adsb.lol/v2/point/${lat}/${lon}/${nm}`,
   adsbfi:  (lat, lon, nm) => `https://opendata.adsb.fi/api/v2/lat/${lat}/lon/${lon}/dist/${nm}`,
+  adsbfi3: (lat, lon, nm) => `https://opendata.adsb.fi/api/v3/lat/${lat}/lon/${lon}/dist/${nm}`,
   adsblol2:(lat, lon, nm) => `https://api.adsb.lol/v2/lat/${lat}/lon/${lon}/dist/${nm}`
 };
-const SRC_NAME = {adsblol:"adsb.lol", adsblol2:"adsb.lol", adsbfi:"adsb.fi"};
+const SRC_NAME = {adsblol:"adsb.lol", adsblol2:"adsb.lol", adsbfi:"adsb.fi", adsbfi3:"adsb.fi", opensky:"OpenSky"};
 let lastSrc = null;
 function setLive(state, txt){ const el = $("#live"); el.className = "live " + state; $("#liveTxt").textContent = txt; }
+function openskyBox(c){
+  const dLat = settings.radius/111, dLon = settings.radius/(111*Math.cos(c[0]*Math.PI/180));
+  return `https://opensky-network.org/api/states/all?lamin=${(c[0]-dLat).toFixed(3)}&lomin=${(c[1]-dLon).toFixed(3)}&lamax=${(c[0]+dLat).toFixed(3)}&lomax=${(c[1]+dLon).toFixed(3)}`;
+}
+function fromOpenSky(j){
+  return (j.states || []).map(x => ({
+    hex: x[0], flight: x[1], lon: x[5], lat: x[6],
+    alt_baro: x[8] ? "ground" : (x[7] != null ? Math.round(x[7]*3.28084) : (x[13] != null ? Math.round(x[13]*3.28084) : null)),
+    gs: x[9] != null ? x[9]*1.94384 : null, track: x[10], baro_rate: x[11] != null ? Math.round(x[11]*196.85) : null,
+    squawk: x[14], ownOp: "", r: "", t: ""
+  }));
+}
+function sourceUrl(s, c){
+  const nm = Math.min(250, Math.ceil(settings.radius/1.852));
+  return s === "opensky" ? openskyBox(c) : SOURCES[s](c[0].toFixed(4), c[1].toFixed(4), nm);
+}
+async function fetchSource(s, c){
+  const j = await getJSON(sourceUrl(s, c), 10000);
+  return s === "opensky" ? fromOpenSky(j) : (j.ac || j.aircraft || []);
+}
 async function fetchTraffic(){
   const c = me || DEFAULT;
-  const nm = Math.min(250, Math.ceil(settings.radius/1.852));
-  let order = ["adsblol","adsbfi","adsblol2"];
-  if (settings.src === "adsbfi") order = ["adsbfi","adsblol","adsblol2"];
-  else if (lastSrc && settings.src === "auto") order = [lastSrc, ...order.filter(x => x !== lastSrc)];
+  let order = ["adsbfi","adsblol","adsbfi3","opensky","adsblol2"];
+  if (settings.src !== "auto" && order.includes(settings.src)) order = [settings.src, ...order.filter(x => x !== settings.src)];
+  else if (lastSrc) order = [lastSrc, ...order.filter(x => x !== lastSrc)];
   let lastErr;
   for (const s of order){
-    try{ const j = await getJSON(SOURCES[s](c[0].toFixed(4), c[1].toFixed(4), nm), 9000); lastSrc = s; return {list: j.ac || j.aircraft || [], src: s}; }
+    try{ const list = await fetchSource(s, c); lastSrc = s; return {list, src: s}; }
     catch(e){ lastErr = e; }
   }
   throw lastErr;
+}
+function errText(e){
+  const m = String(e?.message || e);
+  if (/^\d{3}$/.test(m)) return m === "403" || m === "401" ? `Geweigerd (HTTP ${m})` : m === "429" ? "Te veel verzoeken (HTTP 429)" : `Fout (HTTP ${m})`;
+  if (e?.name === "AbortError") return "Geen antwoord (time-out)";
+  return "Geblokkeerd voor browsers of offline";
+}
+async function testSources(){
+  const out = $("#diag"); const c = me || DEFAULT;
+  const rows = [["adsbfi","adsb.fi"],["adsbfi3","adsb.fi (v3)"],["adsblol","adsb.lol"],["opensky","OpenSky Network"]];
+  out.innerHTML = rows.map(([k, n]) => `<div class="drow" id="d-${k}"><span>${n}</span><span class="mono">testen…</span></div>`).join("")
+    + `<div class="drow" id="d-db"><span>adsbdb (registraties)</span><span class="mono">testen…</span></div><div class="drow" id="d-ps"><span>Planespotters (foto's)</span><span class="mono">testen…</span></div>`;
+  const set = (id, ok, txt) => { const el = $("#" + id + " .mono"); el.textContent = (ok ? "✓ " : "✗ ") + txt; el.style.color = ok ? "var(--ok)" : "var(--warn)"; };
+  await Promise.all([
+    ...rows.map(async ([k]) => { try{ const l = await fetchSource(k, c); set("d-" + k, true, l.length + " toestellen"); }catch(e){ set("d-" + k, false, errText(e)); } }),
+    (async () => { try{ const j = await getJSON("https://api.adsbdb.com/v0/aircraft/PH-BXA"); set("d-db", !!j?.response?.aircraft, j?.response?.aircraft ? "werkt" : "leeg antwoord"); }catch(e){ set("d-db", false, errText(e)); } })(),
+    (async () => { try{ const j = await getJSON("https://api.planespotters.net/pub/photos/reg/PH-BXA"); set("d-ps", true, (j.photos?.length || 0) + " foto's"); }catch(e){ set("d-ps", false, errText(e)); } })()
+  ]);
 }
 async function poll(force){
   clearTimeout(pollTimer);
@@ -618,7 +666,7 @@ async function poll(force){
     if (fails >= 2 && !lastOk) $("#fileNote").hidden = false;
   }finally{
     busy = false;
-    pollTimer = setTimeout(poll, settings.interval*1000);
+    pollTimer = setTimeout(poll, (lastSrc === "opensky" ? Math.max(20, settings.interval) : settings.interval)*1000);
   }
 }
 document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(true); });
@@ -1003,6 +1051,7 @@ $("#s-units").value = settings.units; $("#s-labels").value = settings.labels; $(
 $("#s-int").onchange = e => { settings.interval = +e.target.value; saveSettings(); poll(true); };
 $("#s-units").onchange = e => { settings.units = e.target.value; saveSettings(); render(); };
 $("#s-labels").onchange = e => { settings.labels = e.target.value; saveSettings(); render(); };
+$("#diagBtn").onclick = testSources;
 $("#s-src").onchange = e => { settings.src = e.target.value; saveSettings(); poll(true); };
 
 /* ---------- navigation ---------- */
